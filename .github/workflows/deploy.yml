@@ -1,0 +1,43 @@
+name: Deploy Apps Script
+
+on:
+  push:
+    branches:
+      - main
+      - work
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    env:
+      APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      APPS_SCRIPT_DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+      APPS_SCRIPT_RUN_FUNCTION: ${{ secrets.APPS_SCRIPT_RUN_FUNCTION }}
+      APPS_SCRIPT_RUN_PARAMETERS: ${{ secrets.APPS_SCRIPT_RUN_PARAMETERS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Apps Script
+        run: npm run deploy
