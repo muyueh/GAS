@@ -3,78 +3,132 @@
 ```mermaid
 gitGraph
     commit id: "Initial commit"
+    branch main
+    checkout main
     branch work
     checkout work
-    commit id: "Deployment tooling"
+    branch codex/setup-google-apps-script-project-structure
+    checkout codex/setup-google-apps-script-project-structure
+    commit id: "Add Apps Script deployment automation"
+    commit id: "Add initial Apps Script scaffold"
+    checkout work
+    merge codex/setup-google-apps-script-project-structure id: "Merge PR #1"
+    branch codex/initialize-package.json-and-create-deploy-script
+    checkout codex/initialize-package.json-and-create-deploy-script
+    merge main id: "Sync main into feature"
+    checkout work
+    merge codex/initialize-package.json-and-create-deploy-script id: "Merge PR #2"
+    commit id: "Add Actions deploy workflow"
+    commit id: "Improve deployment error diagnostics"
 ```
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Preparing: npm run deploy
-    Preparing --> Uploading: Collect source files
-    Uploading --> Versioning: projects.updateContent
-    Versioning --> Deploying: versions.create
-    Deploying --> Idle: deployments.update
-    Deploying --> PostDeploy: scripts.run (optional)
-    PostDeploy --> Idle
+    Idle --> Triggered: push/workflow_dispatch
+    Triggered --> Checkout: actions/checkout@v4
+    Checkout --> SetupNode: actions/setup-node@v4 (Node 18)
+    SetupNode --> Install: npm ci
+    Install --> Deploy: npm run deploy
+    Deploy --> Success: Deployment succeeded
+    Deploy --> Failure: Friendly diagnostics returned
+    Failure --> Guidance: Review troubleshooting tips
+    Guidance --> Idle
+    Success --> Idle
 ```
 
 ```mermaid
 sequenceDiagram
     participant Dev as Developer
-    participant CLI as deploy.js
+    participant GH as GitHub Actions
+    participant Runner as Workflow Runner
+    participant NPM as npm CLI
+    participant Deploy as deploy.js
     participant GAS as Apps Script API
-    Dev->>CLI: npm run deploy
-    CLI->>GAS: Authenticate with service account
-    CLI->>GAS: projects.updateContent(files)
-    CLI->>GAS: versions.create()
+
+    Dev->>GH: Push to main/work
+    GH->>Runner: Start deploy workflow
+    Runner->>Runner: Checkout repository
+    Runner->>Runner: Setup Node.js 18
+    Runner->>NPM: npm ci
+    NPM-->>Runner: Dependencies installed
+    Runner->>NPM: npm run deploy
+    NPM->>Deploy: Execute deploy.js
+    Deploy->>GAS: projects.updateContent
+    Deploy->>GAS: versions.create
     alt Deployment ID provided
-        CLI->>GAS: deployments.update(version)
+        Deploy->>GAS: deployments.update
     end
     opt Post-deployment function
-        CLI->>GAS: scripts.run(function, params)
-        GAS-->>CLI: Execution response
+        Deploy->>GAS: scripts.run
+        GAS-->>Deploy: Execution response
     end
-    CLI-->>Dev: Deployment summary
+    alt API not enabled or permissions missing
+        Deploy-->>Runner: Friendly troubleshooting guidance
+        Runner-->>Dev: Surface remediation steps
+    else Success path
+    Deploy-->>Runner: Deployment summary
+    Runner-->>GH: Report status
+    GH-->>Dev: Notify results
+    end
 ```
 
 ```mermaid
 graph TD
     Dev[Developer workstation]
+    GH[GitHub Actions Workflow]
+    Runner[Hosted runner]
     NPM[npm scripts]
     Deploy[deploy.js]
+    Diagnostics[Error guidance utilities]
     GASAPI[Google Apps Script API]
     Project[Apps Script Project]
 
-    Dev --> NPM
+    Dev --> GH
+    GH --> Runner
+    Runner --> NPM
     NPM --> Deploy
     Deploy --> GASAPI
+    Deploy -.-> Diagnostics
+    Diagnostics -.-> Dev
     GASAPI --> Project
 ```
 
 ```mermaid
 flowchart LR
     subgraph Developer
-        A[Prepare env vars]
-        B[Run npm run deploy]
+        A[Push to main/work]
+    end
+    subgraph GitHub_Actions
+        B[Trigger deploy workflow]
+        C[Checkout repo]
+        D[Setup Node 18]
+        E[npm ci]
+        F[npm run deploy]
+        L[Surface troubleshooting guidance]
     end
     subgraph Frontend
-        C[Apps Script UI receives updated files]
+        G[Apps Script UI receives updated files]
     end
     subgraph Backend
-        D[Google Auth handles JWT]
-        E[Projects API updates content]
-        F[Deployments API promotes version]
-        G[Scripts API runs post-deploy]
+        H[Google Auth handles JWT]
+        I[Projects API updates content]
+        J[Deployments API promotes version]
+        K[Scripts API runs post-deploy]
     end
 
     A --> B
-    B --> D
+    B --> C
+    C --> D
     D --> E
-    E --> C
     E --> F
-    F --> G
+    F --> H
+    F --> L
+    L --> A
+    H --> I
+    I --> G
+    I --> J
+    J --> K
 ```
 
 ## Overview
@@ -96,6 +150,11 @@ This repository provides a lightweight deployment utility for Google Apps Script
 | `APPS_SCRIPT_DEPLOYMENT_ID` | ➖ | Deployment ID to promote after creating a new version. |
 | `APPS_SCRIPT_RUN_FUNCTION` | ➖ | Function name to invoke via `scripts.run` after deployment. |
 | `APPS_SCRIPT_RUN_PARAMETERS` | ➖ | JSON array (or single value) of parameters for the post-deployment function. |
+
+## Troubleshooting
+
+- **Apps Script API disabled** – When the workflow reports a `PERMISSION_DENIED` error and advises enabling the Apps Script API, sign in to the target account and toggle on the API at [https://script.google.com/home/usersettings](https://script.google.com/home/usersettings) before retrying.
+- **Missing secrets** – If `APPS_SCRIPT_ID` or `GCP_SERVICE_ACCOUNT_KEY` is absent, the deployment halts immediately. Double-check the GitHub Actions secrets or your local environment variables.
 
 ## Usage
 
