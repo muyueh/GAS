@@ -39,18 +39,26 @@ async function main() {
   const files = await collectScriptFiles(path.resolve(__dirname, 'src'));
   console.log(`Preparing to upload ${files.length} file(s) to Apps Script project ${APPS_SCRIPT_ID}.`);
 
-  await script.projects.updateContent({
-    scriptId: APPS_SCRIPT_ID,
-    requestBody: {files},
-  });
+  await safeApiCall(
+    () =>
+      script.projects.updateContent({
+        scriptId: APPS_SCRIPT_ID,
+        requestBody: {files},
+      }),
+    'Failed to update Apps Script project content.'
+  );
   console.log('Apps Script project content updated.');
 
   let versionNumber;
   try {
-    const versionResponse = await script.projects.versions.create({
-      scriptId: APPS_SCRIPT_ID,
-      requestBody: {description: `Automated deployment ${new Date().toISOString()}`},
-    });
+    const versionResponse = await safeApiCall(
+      () =>
+        script.projects.versions.create({
+          scriptId: APPS_SCRIPT_ID,
+          requestBody: {description: `Automated deployment ${new Date().toISOString()}`},
+        }),
+      'Failed to create a new project version.'
+    );
     versionNumber = versionResponse.data.version?.versionNumber;
     if (versionNumber) {
       console.log(`Created version ${versionNumber}.`);
@@ -58,38 +66,46 @@ async function main() {
       console.warn('Created version but did not receive a version number.');
     }
   } catch (error) {
-    throw new Error(`Failed to create a new project version: ${error.message}`);
+    throw error;
   }
 
   if (APPS_SCRIPT_DEPLOYMENT_ID && versionNumber) {
     try {
-      await script.projects.deployments.update({
-        scriptId: APPS_SCRIPT_ID,
-        deploymentId: APPS_SCRIPT_DEPLOYMENT_ID,
-        requestBody: {
-          deploymentConfig: {
-            versionNumber,
-            manifestFileName: 'appsscript',
-            description: `Automated deployment ${new Date().toISOString()}`,
-          },
-        },
-      });
+      await safeApiCall(
+        () =>
+          script.projects.deployments.update({
+            scriptId: APPS_SCRIPT_ID,
+            deploymentId: APPS_SCRIPT_DEPLOYMENT_ID,
+            requestBody: {
+              deploymentConfig: {
+                versionNumber,
+                manifestFileName: 'appsscript',
+                description: `Automated deployment ${new Date().toISOString()}`,
+              },
+            },
+          }),
+        `Failed to update deployment ${APPS_SCRIPT_DEPLOYMENT_ID}.`
+      );
       console.log(`Deployment ${APPS_SCRIPT_DEPLOYMENT_ID} updated to version ${versionNumber}.`);
     } catch (error) {
-      throw new Error(`Failed to update deployment: ${error.message}`);
+      throw error;
     }
   }
 
   if (APPS_SCRIPT_RUN_FUNCTION) {
     const parameters = parseOptionalJson(APPS_SCRIPT_RUN_PARAMETERS);
     try {
-      const runResponse = await script.scripts.run({
-        scriptId: APPS_SCRIPT_ID,
-        requestBody: {
-          function: APPS_SCRIPT_RUN_FUNCTION,
-          parameters,
-        },
-      });
+      const runResponse = await safeApiCall(
+        () =>
+          script.scripts.run({
+            scriptId: APPS_SCRIPT_ID,
+            requestBody: {
+              function: APPS_SCRIPT_RUN_FUNCTION,
+              parameters,
+            },
+          }),
+        `Failed to execute post-deployment function ${APPS_SCRIPT_RUN_FUNCTION}.`
+      );
       if (runResponse.data.error) {
         console.error('Post-deployment function execution error:', runResponse.data.error);
         throw new Error('scripts.run returned an error.');
@@ -99,8 +115,16 @@ async function main() {
         console.log('Function response:', JSON.stringify(runResponse.data.response, null, 2));
       }
     } catch (error) {
-      throw new Error(`Failed to execute post-deployment function: ${error.message}`);
+      throw error;
     }
+  }
+}
+
+async function safeApiCall(requestFn, contextMessage) {
+  try {
+    return await requestFn();
+  } catch (error) {
+    throw wrapGoogleError(error, contextMessage);
   }
 }
 
@@ -229,6 +253,76 @@ function parseOptionalJson(value) {
 }
 
 main().catch((error) => {
-  console.error(error);
+  if (error?.cause) {
+    console.error(error.message);
+    const diagnostic = formatGoogleDiagnostic(error.cause);
+    if (diagnostic) {
+      console.error(diagnostic);
+    }
+  } else {
+    console.error(error);
+  }
   process.exitCode = 1;
 });
+
+function wrapGoogleError(error, contextMessage) {
+  const details = extractGoogleErrorDetails(error);
+  const guidance = suggestGoogleErrorResolution(error);
+  const messageParts = [contextMessage, details, guidance].filter(Boolean);
+  const message = messageParts.join(' ');
+  return new Error(message || contextMessage, {cause: error});
+}
+
+function extractGoogleErrorDetails(error) {
+  const responseError = error?.response?.data?.error;
+  if (responseError?.message) {
+    const status = responseError.status || error.code || error.status;
+    if (status) {
+      return `Google API error (${status}): ${responseError.message}`;
+    }
+    return `Google API error: ${responseError.message}`;
+  }
+  if (error?.message) {
+    return error.message;
+  }
+  return null;
+}
+
+function suggestGoogleErrorResolution(error) {
+  const responseError = error?.response?.data?.error;
+  const message = responseError?.message || error?.message || '';
+  if (
+    responseError?.status === 'PERMISSION_DENIED' &&
+    message.toLowerCase().includes('apps script api')
+  ) {
+    return 'Ensure the Apps Script API is enabled for the project by visiting https://script.google.com/home/usersettings.';
+  }
+  return null;
+}
+
+function formatGoogleDiagnostic(error) {
+  const responseError = error?.response?.data?.error;
+  if (!responseError) {
+    return error?.message ? `Cause: ${error.message}` : null;
+  }
+
+  const lines = [];
+  if (responseError.status) {
+    lines.push(`Status: ${responseError.status}`);
+  }
+  if (typeof error.code !== 'undefined') {
+    lines.push(`Code: ${error.code}`);
+  }
+  if (responseError.message) {
+    lines.push(`Message: ${responseError.message}`);
+  }
+  if (Array.isArray(responseError.details) && responseError.details.length > 0) {
+    const detailMessages = responseError.details
+      .map((detail) => detail?.errorType || detail?.detail || JSON.stringify(detail))
+      .filter(Boolean);
+    if (detailMessages.length > 0) {
+      lines.push(`Details: ${detailMessages.join('; ')}`);
+    }
+  }
+  return lines.join('\n');
+}

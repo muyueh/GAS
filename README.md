@@ -19,6 +19,7 @@ gitGraph
     checkout work
     merge codex/initialize-package.json-and-create-deploy-script id: "Merge PR #2"
     commit id: "Add Actions deploy workflow"
+    commit id: "Improve deployment error diagnostics"
 ```
 
 ```mermaid
@@ -30,9 +31,10 @@ stateDiagram-v2
     SetupNode --> Install: npm ci
     Install --> Deploy: npm run deploy
     Deploy --> Success: Deployment succeeded
-    Deploy --> Failure: Deployment failed
+    Deploy --> Failure: Friendly diagnostics returned
+    Failure --> Guidance: Review troubleshooting tips
+    Guidance --> Idle
     Success --> Idle
-    Failure --> Idle
 ```
 
 ```mermaid
@@ -61,9 +63,14 @@ sequenceDiagram
         Deploy->>GAS: scripts.run
         GAS-->>Deploy: Execution response
     end
+    alt API not enabled or permissions missing
+        Deploy-->>Runner: Friendly troubleshooting guidance
+        Runner-->>Dev: Surface remediation steps
+    else Success path
     Deploy-->>Runner: Deployment summary
     Runner-->>GH: Report status
     GH-->>Dev: Notify results
+    end
 ```
 
 ```mermaid
@@ -73,6 +80,7 @@ graph TD
     Runner[Hosted runner]
     NPM[npm scripts]
     Deploy[deploy.js]
+    Diagnostics[Error guidance utilities]
     GASAPI[Google Apps Script API]
     Project[Apps Script Project]
 
@@ -81,6 +89,8 @@ graph TD
     Runner --> NPM
     NPM --> Deploy
     Deploy --> GASAPI
+    Deploy -.-> Diagnostics
+    Diagnostics -.-> Dev
     GASAPI --> Project
 ```
 
@@ -95,6 +105,7 @@ flowchart LR
         D[Setup Node 18]
         E[npm ci]
         F[npm run deploy]
+        L[Surface troubleshooting guidance]
     end
     subgraph Frontend
         G[Apps Script UI receives updated files]
@@ -112,6 +123,8 @@ flowchart LR
     D --> E
     E --> F
     F --> H
+    F --> L
+    L --> A
     H --> I
     I --> G
     I --> J
@@ -137,6 +150,11 @@ This repository provides a lightweight deployment utility for Google Apps Script
 | `APPS_SCRIPT_DEPLOYMENT_ID` | ➖ | Deployment ID to promote after creating a new version. |
 | `APPS_SCRIPT_RUN_FUNCTION` | ➖ | Function name to invoke via `scripts.run` after deployment. |
 | `APPS_SCRIPT_RUN_PARAMETERS` | ➖ | JSON array (or single value) of parameters for the post-deployment function. |
+
+## Troubleshooting
+
+- **Apps Script API disabled** – When the workflow reports a `PERMISSION_DENIED` error and advises enabling the Apps Script API, sign in to the target account and toggle on the API at [https://script.google.com/home/usersettings](https://script.google.com/home/usersettings) before retrying.
+- **Missing secrets** – If `APPS_SCRIPT_ID` or `GCP_SERVICE_ACCOUNT_KEY` is absent, the deployment halts immediately. Double-check the GitHub Actions secrets or your local environment variables.
 
 ## Usage
 
